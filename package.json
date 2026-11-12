@@ -1,0 +1,32 @@
+{
+  "name": "@mastondzn/opencode-token-stats",
+  "version": "0.1.0",
+  "description": "OpenCode V2 TUI plugin that shows configurable token, cache, cost, context, and throughput stats in the session footer.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./tui": "./src/tui.tsx"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.7"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.2.7",
+    "@opencode/theme": "2.2.7",
+    "@opentui/core": "0.8.4",
+    "@opentui/solid": "0.8.4",
+    "@types/bun": "latest",
+    "solid-js": "1.9.19",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.8.1",
+    "@opentui/solid": ">=0.8.1",
+    "solid-js": ">=1.9.0"
+  }
+}
