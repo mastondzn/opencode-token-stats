@@ -20,6 +20,8 @@ This package is local-only. Point the CLI plugin list at the repository:
 
 Restart the TUI or let `cli.json` reload.
 
+This is a TUI-only plugin. Configure it in `cli.json`, not `opencode.json`; the server-side plugin scan drops directories without a server entrypoint.
+
 ## Segments
 
 Every segment can be toggled from the configure dialog. The default set is:
@@ -48,6 +50,7 @@ The configure dialog lists every segment as a checkbox:
 
 - `space` toggles the highlighted segment
 - `up` / `down` move
+- `p` cycles the placement
 - `enter` saves and applies immediately
 - `esc` cancels
 - `r` restores the `cli.json` baseline
@@ -55,9 +58,21 @@ The configure dialog lists every segment as a checkbox:
 
 Runtime choices persist in plugin storage and override the `cli.json` baseline for this machine.
 
+## Placement
+
+The line can live in three places. Change it with `p` in the configure dialog or with the `placement` option.
+
+| Value | Where | Trade-off |
+| --- | --- | --- |
+| `composer` | Dedicated full-width row above the prompt | Default; native footer stays intact |
+| `footer` | Native `prompt.footer.status` row | Full stats line, but the native footer can clip |
+| `footer-compact` | Native `prompt.footer.status` row, shrunk to fit | Native footer mostly intact; stats may reduce to a short prefix |
+
+On an 80-column terminal, the native footer row is already crowded by the location, subagent/shell summary, token/context readout, and palette hints. `composer` is the only placement that reliably shows the whole line there.
+
 ## Options
 
-`segments` sets the initial enabled set and display order. The runtime dialog can then toggle visibility without losing the configured order.
+`segments` sets the initial enabled set and display order. `placement` sets the initial placement (`composer`, `footer`, or `footer-compact`). The runtime dialog can then change both without losing the configured order.
 
 ```json title="~/.config/opencode/cli.json"
 {
@@ -65,7 +80,8 @@ Runtime choices persist in plugin storage and override the `cli.json` baseline f
     {
       "package": "file:///home/maston/opencode-token-stats",
       "options": {
-        "segments": ["input", "output", "cacheHit", "context", "tps", "ttft"]
+        "segments": ["input", "output", "cacheHit", "context", "tps", "ttft"],
+        "placement": "composer"
       }
     }
   ]
@@ -75,6 +91,7 @@ Runtime choices persist in plugin storage and override the `cli.json` baseline f
 ## Behavior
 
 - **Scope:** current session only; subagent sessions are not rolled up.
+- **Placement:** configurable as a dedicated composer row, the native footer, or a compact native-footer variant; see [Placement](#placement).
 - **Context:** last assistant message with usage after the last completed compaction, respecting the revert boundary. The value includes input, output, reasoning, cache read, and cache write tokens.
 - **Cache hit:** session-wide, cache writes excluded from the denominator.
 - **Throughput:** live TPS is estimated from stream deltas over a five-second window; once a step ends, the exact provider-reported output + reasoning tokens replace the estimate. TTFT is measured from step start to the first streamed text, reasoning, or tool-input token. Measurements begin when the plugin sees a step stream in the current TUI run; they are not reconstructed from historical messages.

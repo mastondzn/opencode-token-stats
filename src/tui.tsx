@@ -19,17 +19,23 @@ import {
   SEGMENT_IDS,
   buildLine,
   fitLine,
-  lineText,
   lineWidth,
   normalizeSegments,
   type SegmentId,
 } from "./segments"
+import {
+  PLACEMENTS,
+  normalizePlacement,
+  nextPlacement,
+  type Placement,
+} from "./placement"
 import { contextUsage, type StatsSnapshot } from "./stats"
 import { createTracker, type Tracker } from "./tracker"
 
 type Context = Plugin.Context
 
-type Settings = { segments: SegmentId[] }
+type Settings = { segments: SegmentId[]; placement: Placement }
+type Baseline = { segments: SegmentId[]; placement: Placement }
 type SettingsStore = Store<Settings>
 type UpdateSettings = (mutation: (draft: Settings) => void) => Promise<void>
 
@@ -37,25 +43,15 @@ const PLUGIN_ID = "mastondzn.token-stats"
 const STORE_KEY = "settings"
 const COMMAND_ID = "mastondzn.token-stats.configure"
 
-const SAMPLE_STATS: StatsSnapshot = {
-  input: 343_000,
-  output: 188_000,
-  reasoning: 37_000,
-  cacheRead: 37_000_000,
-  cacheWrite: 0,
-  cost: 0.297,
-  contextUsed: 331_000,
-  contextLimit: 1_000_000,
-  tps: 120,
-  ttftMs: 12_000,
-}
-
 export default Plugin.define({
   id: PLUGIN_ID,
   setup(context) {
-    const baseline = normalizeSegments(context.options.segments) ?? [...DEFAULT_SEGMENTS]
+    const baseline: Baseline = {
+      segments: normalizeSegments(context.options.segments) ?? [...DEFAULT_SEGMENTS],
+      placement: normalizePlacement(context.options.placement),
+    }
     const [settings, updateSettings] = context.storage.store<Settings>(STORE_KEY, {
-      initial: { segments: [...baseline] },
+      initial: { segments: [...baseline.segments], placement: baseline.placement },
     })
     const tracker = createTracker(context)
 
@@ -84,6 +80,19 @@ export default Plugin.define({
       },
     })
 
+    const unregisterComposer = context.ui.slot({
+      append: "session.composer.top",
+      render: (input) => (
+        <TokenStatsComposer
+          context={context}
+          sessionID={input.sessionID}
+          settings={settings}
+          baseline={baseline}
+          tracker={tracker}
+        />
+      ),
+    })
+
     const unregisterFooter = context.ui.slot({
       append: "prompt.footer.status",
       render: (input) => (
@@ -100,6 +109,7 @@ export default Plugin.define({
 
     return () => {
       unregisterApp()
+      unregisterComposer()
       unregisterFooter()
       tracker.dispose()
     }
@@ -110,7 +120,7 @@ function openConfigureDialog(props: {
   context: Context
   settings: SettingsStore
   updateSettings: UpdateSettings
-  baseline: readonly SegmentId[]
+  baseline: Baseline
 }) {
   props.context.ui.dialog.set({ size: "large", centered: true })
   props.context.ui.dialog.show(() => <ConfigureDialog {...props} />)
@@ -121,20 +131,52 @@ function TokenStatsSlot(props: {
   sessionID: string | undefined
   mode: "normal" | "shell"
   settings: SettingsStore
-  baseline: readonly SegmentId[]
+  baseline: Baseline
   tracker: Tracker
 }) {
+  const placement = createMemo(() =>
+    normalizePlacement(props.settings.placement ?? props.baseline.placement),
+  )
+
   return (
-    <Show when={props.sessionID && props.mode === "normal"}>
-      {(sessionID: Accessor<string>) => (
-        <TokenStatsLine
-          context={props.context}
-          sessionID={sessionID()}
-          settings={props.settings}
-          baseline={props.baseline}
-          tracker={props.tracker}
-        />
-      )}
+    <Show when={placement() === "footer" || placement() === "footer-compact"}>
+      <Show when={props.mode === "normal" ? props.sessionID : undefined}>
+        {(sessionID: Accessor<string>) => (
+          <TokenStatsLine
+            context={props.context}
+            sessionID={sessionID()}
+            settings={props.settings}
+            baseline={props.baseline}
+            tracker={props.tracker}
+            fit={placement() === "footer-compact"}
+          />
+        )}
+      </Show>
+    </Show>
+  )
+}
+
+function TokenStatsComposer(props: {
+  context: Context
+  sessionID: string
+  settings: SettingsStore
+  baseline: Baseline
+  tracker: Tracker
+}) {
+  const placement = createMemo(() =>
+    normalizePlacement(props.settings.placement ?? props.baseline.placement),
+  )
+
+  return (
+    <Show when={placement() === "composer"}>
+      <TokenStatsLine
+        context={props.context}
+        sessionID={props.sessionID}
+        settings={props.settings}
+        baseline={props.baseline}
+        tracker={props.tracker}
+        fit
+      />
     </Show>
   )
 }
@@ -143,8 +185,9 @@ function TokenStatsLine(props: {
   context: Context
   sessionID: string
   settings: SettingsStore
-  baseline: readonly SegmentId[]
+  baseline: Baseline
   tracker: Tracker
+  fit: boolean
 }) {
   const [terminalWidth, setTerminalWidth] = createSignal(props.context.renderer.width)
   const [measuredWidth, setMeasuredWidth] = createSignal<number>()
@@ -236,11 +279,18 @@ function TokenStatsLine(props: {
     }
   })
 
-  const segments = createMemo(() => normalizeSegments(props.settings.segments) ?? [...props.baseline])
+  const segments = createMemo(
+    () => normalizeSegments(props.settings.segments) ?? [...props.baseline.segments],
+  )
   const fullLine = createMemo(() => buildLine(stats(), segments()))
   const fallbackWidth = createMemo(() => Math.max(8, terminalWidth() - 12))
-  const availableWidth = createMemo(() => Math.min(measuredWidth() ?? fallbackWidth(), fallbackWidth()))
-  const visibleLine = createMemo(() => fitLine(fullLine(), availableWidth()))
+  const minimumWidth = createMemo(() => (props.fit ? 5 : 0))
+  const availableWidth = createMemo(() =>
+    Math.max(minimumWidth(), Math.min(measuredWidth() ?? fallbackWidth(), fallbackWidth())),
+  )
+  const visibleLine = createMemo(() =>
+    props.fit ? fitLine(fullLine(), availableWidth()) : fullLine(),
+  )
   const visibleWidth = createMemo(() => lineWidth(visibleLine()))
 
   createEffect(
@@ -255,9 +305,10 @@ function TokenStatsLine(props: {
     <Show when={visibleLine().length > 0}>
       <box
         flexDirection="row"
-        flexShrink={1}
-        minWidth={0}
+        flexShrink={props.fit ? 1 : 0}
+        minWidth={minimumWidth()}
         onSizeChange={function (this: BoxRenderable) {
+          if (!props.fit) return
           const width = this.width
           if (!Number.isFinite(width) || width < 8) return
           if (width < visibleWidth() - 0.5) setMeasuredWidth(width)
@@ -299,11 +350,14 @@ function ConfigureDialog(props: {
   context: Context
   settings: SettingsStore
   updateSettings: UpdateSettings
-  baseline: readonly SegmentId[]
+  baseline: Baseline
 }) {
   const theme = props.context.theme
   const [draft, setDraft] = createSignal<SegmentId[]>(
-    normalizeSegments(props.settings.segments) ?? [...props.baseline],
+    normalizeSegments(props.settings.segments) ?? [...props.baseline.segments],
+  )
+  const [placement, setPlacement] = createSignal<Placement>(
+    normalizePlacement(props.settings.placement ?? props.baseline.placement),
   )
   const [cursor, setCursor] = createSignal(0)
 
@@ -325,16 +379,26 @@ function ConfigureDialog(props: {
     })
   }
 
-  const reset = () => setDraft([...props.baseline])
+  const reset = () => {
+    setDraft([...props.baseline.segments])
+    setPlacement(props.baseline.placement)
+  }
 
   const toggleAll = () => {
     setDraft((current) => (current.length === SEGMENT_IDS.length ? [] : [...SEGMENT_IDS]))
   }
 
+  const cyclePlacement = () => setPlacement((current) => nextPlacement(current))
+
+  const placementLabel = createMemo(
+    () => PLACEMENTS.find((item) => item.id === placement()) ?? PLACEMENTS[0],
+  )
+
   const save = async () => {
     try {
       await props.updateSettings((settings) => {
         settings.segments = draft()
+        settings.placement = placement()
       })
     } catch (error) {
       props.context.ui.toast.show({
@@ -387,50 +451,69 @@ function ConfigureDialog(props: {
         group: "Token stats",
         run: toggleAll,
       },
+      {
+        bind: "p",
+        title: "Cycle token stats placement",
+        group: "Token stats",
+        run: cyclePlacement,
+      },
     ],
   }))
 
-  const preview = createMemo(() => {
-    const line = draft()
-    return line.length === 0 ? "(no segments)" : lineText(buildLine(SAMPLE_STATS, line))
-  })
+  const half = Math.ceil(SEGMENTS.length / 2)
+  const rows = createMemo(() =>
+    Array.from({ length: half }, (_, index) => ({
+      left: SEGMENTS[index],
+      right: SEGMENTS[index + half],
+    })),
+  )
+  const activeSegment = createMemo(() => SEGMENTS[cursor()])
+
+  const cell = (segment: (typeof SEGMENTS)[number] | undefined, index: number) => {
+    if (!segment) return <box flexGrow={1} />
+    const active = () => cursor() === index
+    const enabled = () => draft().includes(segment.id)
+    return (
+      <box flexGrow={1} flexDirection="row">
+        <text fg={active() ? theme.text.base : theme.text.faint} wrapMode="none">
+          {active() ? "› " : "  "}
+        </text>
+        <text
+          fg={enabled() ? theme.text.feedback.success.base : theme.text.muted}
+          wrapMode="none"
+        >
+          {enabled() ? "[x] " : "[ ] "}
+        </text>
+        <text fg={active() ? theme.text.base : theme.text.muted} wrapMode="none">
+          {segment.label}
+        </text>
+      </box>
+    )
+  }
 
   return (
     <box flexDirection="column" gap={1}>
       <text fg={theme.text.base}>Token stats</text>
-      <text fg={theme.text.muted}>
-        space toggle · up/down move · enter save · esc cancel · r reset · a all
+      <text fg={theme.text.muted} wrapMode="none" truncate>
+        space toggle · ↑↓ move · p place · enter save · esc cancel · r reset · a all
+      </text>
+      <text fg={theme.text.muted} wrapMode="none" truncate>
+        {`Placement: ${placementLabel()?.label ?? ""} (p cycles) · ${placementLabel()?.description ?? ""}`}
       </text>
       <box flexDirection="column">
-        <For each={SEGMENTS}>
-          {(segment, index) => {
-            const active = () => cursor() === index()
-            const enabled = () => draft().includes(segment.id)
-            return (
-              <box flexDirection="row" gap={0}>
-                <text fg={active() ? theme.text.base : theme.text.faint} wrapMode="none">
-                  {active() ? "› " : "  "}
-                </text>
-                <text
-                  fg={enabled() ? theme.text.feedback.success.base : theme.text.muted}
-                  wrapMode="none"
-                >
-                  {enabled() ? "[x] " : "[ ] "}
-                </text>
-                <text fg={active() ? theme.text.base : theme.text.muted} wrapMode="none">
-                  {segment.label}
-                </text>
-                <text fg={theme.text.faint} wrapMode="none" truncate flexShrink={1}>
-                  {`  ${segment.description}`}
-                </text>
-              </box>
-            )
-          }}
+        <For each={rows()}>
+          {(row, index) => (
+            <box flexDirection="row" gap={1}>
+              {cell(row.left, index())}
+              {cell(row.right, index() + half)}
+            </box>
+          )}
         </For>
       </box>
-      <text fg={theme.text.muted}>Preview</text>
-      <text fg={theme.text.base} wrapMode="none" truncate>
-        {preview()}
+      <text fg={theme.text.faint} wrapMode="none" truncate>
+        {activeSegment()
+          ? `${activeSegment()!.label}: ${activeSegment()!.description}`
+          : ""}
       </text>
     </box>
   )
